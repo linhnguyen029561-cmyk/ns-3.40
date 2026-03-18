@@ -55,17 +55,57 @@ WifiMacQueue::GetTypeId()
                           TimeValue(MilliSeconds(500)),
                           MakeTimeAccessor(&WifiMacQueue::SetMaxDelay),
                           MakeTimeChecker())
+            .AddAttribute("EnablePcrq",
+                          "Flag to enable or disable PCRQ logic",
+                          BooleanValue(true),
+                          MakeBooleanAccessor(&WifiMacQueue::m_enablePcrq),
+                          MakeBooleanChecker())
+            .AddAttribute("Alpha",
+                          "Input weight constant for PCRQ Algorithm 1",
+                          DoubleValue(2.0),
+                          MakeDoubleAccessor(&WifiMacQueue::m_alpha),
+                          MakeDoubleChecker<double>())
+            .AddAttribute("Beta",
+                          "Hold weight constant for PCRQ Algorithm 2",
+                          DoubleValue(0.3),
+                          MakeDoubleAccessor(&WifiMacQueue::m_beta),
+                          MakeDoubleChecker<double>())
+            .AddAttribute("Gamma",
+                          "Output weight constant for PCRQ Algorithm 3",
+                          DoubleValue(0.3),
+                          MakeDoubleAccessor(&WifiMacQueue::m_gamma),
+                          MakeDoubleChecker<double>())
+            .AddAttribute("Delta",
+                          "Delay time for PCRQ Algorithm 3",
+                          TimeValue(MilliSeconds(1)),
+                          MakeTimeAccessor(&WifiMacQueue::m_delta),
+                          MakeTimeChecker())
             .AddTraceSource("Expired",
                             "MPDU dropped because its lifetime expired.",
                             MakeTraceSourceAccessor(&WifiMacQueue::m_traceExpired),
-                            "ns3::WifiMpdu::TracedCallback");
+                            "ns3::WifiMpdu::TracedCallback")
+            .AddTraceSource("PInput",
+                            "Probabilistic drop at input (Algorithm 1).",
+                            MakeTraceSourceAccessor(&WifiMacQueue::m_tracePInput),
+                            "ns3::TracedValueCallback::Double")
+            .AddTraceSource("POutput",
+                            "Probabilistic drop at output (Algorithm 3).",
+                            MakeTraceSourceAccessor(&WifiMacQueue::m_tracePOutput),
+                            "ns3::TracedValueCallback::Double");
     return tid;
 }
 
 WifiMacQueue::WifiMacQueue(AcIndex ac)
     : m_ac(ac),
+      m_enablePcrq(true),
+      m_alpha(2.0),
+      m_beta(0.3),
+      m_gamma(0.3),
+      m_delta(MilliSeconds(1)),
+
       NS_LOG_TEMPLATE_DEFINE("WifiMacQueue")
 {
+    m_uniformRandomVariable = CreateObject<UniformRandomVariable>();
 }
 
 WifiMacQueue::~WifiMacQueue()
@@ -227,6 +267,30 @@ WifiMacQueue::GetMaxDelay() const
     return m_maxDelay;
 }
 
+double
+WifiMacQueue::GetAlpha() const
+{
+    return m_alpha;
+}
+
+bool
+WifiMacQueue::GetEnablePcrq() const
+{
+    return m_enablePcrq;
+}
+
+double
+WifiMacQueue::GetBeta() const
+{
+    return m_beta;
+}
+
+double
+WifiMacQueue::GetGamma() const
+{
+    return m_gamma;
+}
+
 bool
 WifiMacQueue::Enqueue(Ptr<WifiMpdu> item)
 {
@@ -235,6 +299,7 @@ WifiMacQueue::Enqueue(Ptr<WifiMpdu> item)
     auto queueId = WifiMacQueueContainer::GetQueueId(item);
     return Insert(GetContainer().GetQueue(queueId).cend(), item);
 }
+
 
 bool
 WifiMacQueue::Insert(ConstIterator pos, Ptr<WifiMpdu> item)
@@ -387,8 +452,58 @@ WifiMacQueue::PeekFirstAvailable(uint8_t linkId, Ptr<const WifiMpdu> item) const
         return nullptr;
     }
 
-    return GetContainer().GetQueue(queueId.value()).cbegin()->mpdu;
+    const auto& cont = GetContainer();
+
+    // ======================================================================
+    // PCRQ Algorithm 3: Probabilistic Hold at Output (issend)
+    // ======================================================================
+    if (m_enablePcrq)
+    {
+        // 1. Check if this specific flow was recently held
+        auto itHold = m_holdUntil.find(queueId.value());
+        if (itHold != m_holdUntil.end() && Simulator::Now() < itHold->second)
+        {
+             NS_LOG_DEBUG("[PCRQ Algo3] STILL HOLDING queue until " << itHold->second.GetSeconds() << "s");
+             return nullptr;
+        }
+
+        uint32_t nflow = 0;
+        uint64_t totalPkts = QueueBase::GetNPackets();
+        uint32_t qlen_i = cont.GetQueue(queueId.value()).size();
+
+        // If GetQueues() exists, we use it to count active flows
+        for (const auto& kv : cont.GetQueues())
+        {
+            if (!kv.second.empty())
+            {
+                nflow++;
+            }
+        }
+
+        if (nflow > 1 && qlen_i > 0)
+        {
+            double ave = static_cast<double>(totalPkts) / nflow;
+            if (ave > 0)
+            {
+                double probx = m_gamma * (static_cast<double>(qlen_i) - ave)
+                               / ((nflow - 1) * ave);
+                double proby = m_uniformRandomVariable->GetValue(0.0, 1.0);
+                if (probx > proby)
+                {
+                    NS_LOG_DEBUG("[PCRQ Algo3] NEW HOLD: qlen_i=" << qlen_i 
+                                 << " duration=" << m_delta.GetMilliSeconds() << "ms");
+                    m_holdUntil[queueId.value()] = Simulator::Now() + m_delta;
+                    return nullptr;
+                }
+            }
+        }
+    }
+    // ======================================================================
+
+    return cont.GetQueue(queueId.value()).cbegin()->mpdu;
 }
+
+
 
 Ptr<WifiMpdu>
 WifiMacQueue::Remove()
@@ -472,6 +587,7 @@ WifiMacQueue::DoEnqueue(ConstIterator pos, Ptr<WifiMpdu> item)
         return false;
     }
 
+
     auto queueId = WifiMacQueueContainer::GetQueueId(item);
     if (pos != GetContainer().GetQueue(queueId).cend() && mpdu && pos->mpdu == mpdu->GetOriginal())
     {
@@ -547,3 +663,4 @@ WifiMacQueue::DoRemove(ConstIterator pos)
 }
 
 } // namespace ns3
+

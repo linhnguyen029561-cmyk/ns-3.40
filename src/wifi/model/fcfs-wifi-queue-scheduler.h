@@ -23,6 +23,7 @@
 #include "wifi-mac-queue-scheduler-impl.h"
 
 #include "ns3/nstime.h"
+#include <map>
 
 namespace ns3
 {
@@ -36,7 +37,7 @@ class WifiMpdu;
  */
 struct FcfsPrio
 {
-    Time priority;               ///< time priority
+    uint64_t token;               ///< round robin token
     WifiContainerQueueType type; ///< type of container queue
 };
 
@@ -86,9 +87,14 @@ class FcfsWifiQueueScheduler : public WifiMacQueueSchedulerImpl<FcfsPrio>
     void DoNotifyRemove(AcIndex ac, const std::list<Ptr<WifiMpdu>>& mpdus) override;
 
     DropPolicy m_dropPolicy; //!< Drop behavior of queue
+    
+    uint64_t m_token; //!< Token counter for round robin
+    std::map<WifiContainerQueueId, uint64_t> m_queueTokens; //!< Token of each active queue
+
     NS_LOG_TEMPLATE_DECLARE; //!< redefinition of the log component
 };
 
 } // namespace ns3
 
 #endif /* FCFS_WIFI_QUEUE_SCHEDULER_H */
+

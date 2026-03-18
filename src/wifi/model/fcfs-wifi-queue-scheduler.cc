@@ -23,6 +23,7 @@
 
 #include "ns3/enum.h"
 #include "ns3/log.h"
+#include "ns3/random-variable-stream.h"
 
 namespace ns3
 {
@@ -32,7 +33,7 @@ NS_LOG_COMPONENT_DEFINE("FcfsWifiQueueScheduler");
 bool
 operator==(const FcfsPrio& lhs, const FcfsPrio& rhs)
 {
-    return lhs.priority == rhs.priority && lhs.type == rhs.type;
+    return lhs.token == rhs.token && lhs.type == rhs.type;
 }
 
 bool
@@ -57,8 +58,8 @@ operator<(const FcfsPrio& lhs, const FcfsPrio& rhs)
         return false;
     }
     // we get here if both priority values refer to container queues of the same type,
-    // hence we can compare the time values.
-    return lhs.priority < rhs.priority;
+    // hence we can compare the tokens.
+    return lhs.token < rhs.token;
 }
 
 NS_OBJECT_ENSURE_REGISTERED(FcfsWifiQueueScheduler);
@@ -67,7 +68,7 @@ TypeId
 FcfsWifiQueueScheduler::GetTypeId()
 {
     static TypeId tid = TypeId("ns3::FcfsWifiQueueScheduler")
-                            .SetParent<WifiMacQueueSchedulerImpl<Time>>()
+                            .SetParent<WifiMacQueueSchedulerImpl<FcfsPrio>>()
                             .SetGroupName("Wifi")
                             .AddConstructor<FcfsWifiQueueScheduler>()
                             .AddAttribute("DropPolicy",
@@ -83,7 +84,8 @@ FcfsWifiQueueScheduler::GetTypeId()
 }
 
 FcfsWifiQueueScheduler::FcfsWifiQueueScheduler()
-    : NS_LOG_TEMPLATE_DEFINE("FcfsWifiQueueScheduler")
+    : m_token(0),
+      NS_LOG_TEMPLATE_DEFINE("FcfsWifiQueueScheduler")
 {
 }
 
@@ -132,11 +134,12 @@ FcfsWifiQueueScheduler::DoNotifyEnqueue(AcIndex ac, Ptr<WifiMpdu> mpdu)
 
     const auto queueId = WifiMacQueueContainer::GetQueueId(mpdu);
 
-    // priority is determined by the head of the queue
-    auto item = GetWifiMacQueue(ac)->PeekByQueueId(queueId);
-    NS_ASSERT(item);
+    if (m_queueTokens.find(queueId) == m_queueTokens.end())
+    {
+        m_queueTokens[queueId] = ++m_token;
+    }
 
-    SetPriority(ac, queueId, {item->GetTimestamp(), std::get<WifiContainerQueueType>(queueId)});
+    SetPriority(ac, queueId, {m_queueTokens[queueId], std::get<WifiContainerQueueType>(queueId)});
 }
 
 void
@@ -155,9 +158,60 @@ FcfsWifiQueueScheduler::DoNotifyDequeue(AcIndex ac, const std::list<Ptr<WifiMpdu
     {
         if (auto item = GetWifiMacQueue(ac)->PeekByQueueId(queueId))
         {
+            m_queueTokens[queueId] = ++m_token;
             SetPriority(ac,
                         queueId,
-                        {item->GetTimestamp(), std::get<WifiContainerQueueType>(queueId)});
+                        {m_queueTokens[queueId], std::get<WifiContainerQueueType>(queueId)});
+        }
+        else
+        {
+            // ==== PCRQ ALGORITHM 2: Controlling the Turn of Reading Queues ====
+            if (GetWifiMacQueue(ac)->GetEnablePcrq()) {
+                uint32_t totalPackets = 0;
+                uint32_t numActiveQueues = 0;
+                uint32_t qmax = 0;
+                
+                for (const auto& kv : GetSortedQueues(ac)) {
+                    uint32_t qSize = GetWifiMacQueue(ac)->GetNPackets(kv.second.get().first);
+                    if (qSize > 0) {
+                        totalPackets += qSize;
+                        numActiveQueues++;
+                        if (qSize > qmax) {
+                            qmax = qSize;
+                        }
+                    }
+                }
+                
+                bool holdTurn = false;
+                if (numActiveQueues > 0 && totalPackets > 0) {
+                    double ave = static_cast<double>(totalPackets) / numActiveQueues;
+                    double beta = GetWifiMacQueue(ac)->GetBeta();
+                    // P_turn calculation based on Algorithm 2
+                    double p_turn = beta * qmax / (numActiveQueues * ave);
+                    
+                    static Ptr<UniformRandomVariable> uv = CreateObject<UniformRandomVariable>();
+                    double randVal = uv->GetValue();
+                    
+                    if (randVal <= p_turn) {
+                        holdTurn = true;
+                        NS_LOG_DEBUG("PCRQ Algorithm 2 Hold Turn: rand=" << randVal << " <= P_turn=" << p_turn 
+                                     << " (qmax=" << qmax << ", ave=" << ave << ")");
+                    }
+                }
+
+                if (holdTurn) {
+                    // Keep the queue's token so it retains its turn (or put it to back of line)
+                    m_queueTokens[queueId] = ++m_token; 
+                    // We do not call SetPriority here because the queue is empty, and ns-3 
+                    // requires removing empty queues from the sorted list to avoid infinite loops
+                    // when searching for packets. We just keep the token in m_queueTokens.
+                } else {
+                    m_queueTokens.erase(queueId);
+                }
+            } else {
+                m_queueTokens.erase(queueId);
+            }
+            // ==== END PCRQ ALGORITHM 2 ====
         }
     }
 }
@@ -180,9 +234,57 @@ FcfsWifiQueueScheduler::DoNotifyRemove(AcIndex ac, const std::list<Ptr<WifiMpdu>
         {
             SetPriority(ac,
                         queueId,
-                        {item->GetTimestamp(), std::get<WifiContainerQueueType>(queueId)});
+                        {m_queueTokens[queueId], std::get<WifiContainerQueueType>(queueId)});
+        }
+        else
+        {
+            // ==== PCRQ ALGORITHM 2: Controlling the Turn of Reading Queues ====
+            if (GetWifiMacQueue(ac)->GetEnablePcrq()) {
+                uint32_t totalPackets = 0;
+                uint32_t numActiveQueues = 0;
+                uint32_t qmax = 0;
+                
+                for (const auto& kv : GetSortedQueues(ac)) {
+                    uint32_t qSize = GetWifiMacQueue(ac)->GetNPackets(kv.second.get().first);
+                    if (qSize > 0) {
+                        totalPackets += qSize;
+                        numActiveQueues++;
+                        if (qSize > qmax) {
+                            qmax = qSize;
+                        }
+                    }
+                }
+                
+                bool holdTurn = false;
+                if (numActiveQueues > 0 && totalPackets > 0) {
+                    double ave = static_cast<double>(totalPackets) / numActiveQueues;
+                    double beta = GetWifiMacQueue(ac)->GetBeta();
+                    // P_turn calculation based on Algorithm 2
+                    double p_turn = beta * qmax / (numActiveQueues * ave);
+                    
+                    static Ptr<UniformRandomVariable> uv = CreateObject<UniformRandomVariable>();
+                    double randVal = uv->GetValue();
+                    
+                    if (randVal <= p_turn) {
+                        holdTurn = true;
+                        NS_LOG_DEBUG("PCRQ Algorithm 2 Hold Turn: rand=" << randVal << " <= P_turn=" << p_turn 
+                                     << " (qmax=" << qmax << ", ave=" << ave << ")");
+                    }
+                }
+
+                if (holdTurn) {
+                    // Keep the queue's token so it retains its turn (or put it to back of line)
+                    m_queueTokens[queueId] = ++m_token; 
+                } else {
+                    m_queueTokens.erase(queueId);
+                }
+            } else {
+                m_queueTokens.erase(queueId);
+            }
+            // ==== END PCRQ ALGORITHM 2 ====
         }
     }
 }
 
 } // namespace ns3
+

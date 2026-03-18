@@ -103,6 +103,12 @@ WifiMacQueueContainer::GetQueue(const WifiContainerQueueId& queueId) const
     return m_queues[queueId];
 }
 
+const std::unordered_map<WifiContainerQueueId, WifiMacQueueContainer::ContainerQueue>&
+WifiMacQueueContainer::GetQueues() const
+{
+    return m_queues;
+}
+
 uint32_t
 WifiMacQueueContainer::GetNBytes(const WifiContainerQueueId& queueId) const
 {
@@ -220,3 +226,4 @@ std::hash<ns3::WifiContainerQueueId>::operator()(ns3::WifiContainerQueueId queue
     std::string s(buffer, buffer + size);
     return std::hash<std::string>{}(s);
 }
+

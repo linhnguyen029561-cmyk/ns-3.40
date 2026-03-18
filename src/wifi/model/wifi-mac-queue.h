@@ -32,6 +32,7 @@
 #include <functional>
 #include <optional>
 #include <unordered_map>
+#include "ns3/random-variable-stream.h"
 
 namespace ns3
 {
@@ -114,6 +115,26 @@ class WifiMacQueue : public Queue<WifiMpdu, ns3::WifiMacQueueContainer>
      * \return the maximum delay
      */
     Time GetMaxDelay() const;
+
+    /**
+     * Get the weight alpha for PCRQ Algorithm 1
+     */
+    double GetAlpha() const;
+
+    /**
+     * Check if PCRQ is enabled
+     */
+    bool GetEnablePcrq() const;
+
+    /**
+     * Get the weight beta for PCRQ Algorithm 2
+     */
+    double GetBeta() const;
+
+    /**
+     * Get the weight gamma for PCRQ Algorithm 3
+     */
+    double GetGamma() const;
 
     /**
      * Enqueue the given Wifi MAC queue item at the <i>end</i> of the queue.
@@ -351,8 +372,22 @@ class WifiMacQueue : public Queue<WifiMpdu, ns3::WifiMacQueueContainer>
     AcIndex m_ac;                           //!< the access category
     Ptr<WifiMacQueueScheduler> m_scheduler; //!< the MAC queue scheduler
 
+    bool m_enablePcrq; //!< Flag to enable or disable PCRQ logic
+    double m_alpha; //!< Input weight constant for PCRQ Algorithm 1
+    double m_beta;  //!< Hold weight constant for PCRQ Algorithm 2
+    double m_gamma; //!< Output weight constant for PCRQ Algorithm 3
+    Time m_delta;   //!< Delay time for PCRQ Algorithm 3
+    mutable std::map<WifiContainerQueueId, Time> m_holdUntil; //!< Track hold time per sub-queue
+    Ptr<UniformRandomVariable> m_uniformRandomVariable; //!< Random variable for probabilistic drop
+
     /// Traced callback: fired when a packet is dropped due to lifetime expiration
     TracedCallback<Ptr<const WifiMpdu>> m_traceExpired;
+
+    /// Traced callback: fired to log the P_input drop probability (Algorithm 1)
+    TracedCallback<double, uint32_t, double> m_tracePInput; // P_input, qlen, ave
+
+    /// Traced callback: fired to log the P_output drop probability (Algorithm 3)
+    TracedCallback<double, uint32_t, double> m_tracePOutput; // P_output, qlen, ave
 
     NS_LOG_TEMPLATE_DECLARE; //!< redefinition of the log component
 };
@@ -360,3 +395,4 @@ class WifiMacQueue : public Queue<WifiMpdu, ns3::WifiMacQueueContainer>
 } // namespace ns3
 
 #endif /* WIFI_MAC_QUEUE_H */
+
