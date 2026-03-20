@@ -589,6 +589,48 @@ WifiMacQueue::DoEnqueue(ConstIterator pos, Ptr<WifiMpdu> item)
 
 
     auto queueId = WifiMacQueueContainer::GetQueueId(item);
+
+    // ======================================================================
+    // PCRQ Algorithm 1: Probabilistic Drop at Input (isdrop)
+    // ======================================================================
+    if (m_enablePcrq)
+    {
+        uint32_t nflow = 0;
+        const auto& cont = GetContainer();
+        for (const auto& kv : cont.GetQueues())
+        {
+            if (!kv.second.empty())
+            {
+                nflow++;
+            }
+        }
+        
+        // If it's a new flow, it should be counted too
+        if (cont.GetQueue(queueId).empty())
+        {
+            nflow++;
+        }
+
+        uint64_t totalPkts = QueueBase::GetNPackets();
+        uint32_t qlen_i = cont.GetQueue(queueId).size();
+
+        if (nflow > 1 && totalPkts > 0)
+        {
+            double ave = static_cast<double>(totalPkts) / nflow;
+            if (ave > 0)
+            {
+                double probd = m_alpha * (static_cast<double>(qlen_i) - ave) / (nflow * ave);
+                double rand_val = m_uniformRandomVariable->GetValue(0.0, 1.0);
+                if (rand_val < probd)
+                {
+                    NS_LOG_DEBUG("[PCRQ Algo1] DROP: qlen_i=" << qlen_i << " ave=" << ave << " probd=" << probd);
+                    SetMaxSize(currSize); 
+                    return false; // Dropped
+                }
+            }
+        }
+    }
+
     if (pos != GetContainer().GetQueue(queueId).cend() && mpdu && pos->mpdu == mpdu->GetOriginal())
     {
         // the element pointed to by pos must be dropped; update insert position
