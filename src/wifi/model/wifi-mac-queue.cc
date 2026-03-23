@@ -457,16 +457,30 @@ WifiMacQueue::PeekFirstAvailable(uint8_t linkId, Ptr<const WifiMpdu> item) const
     // ======================================================================
     // PCRQ Algorithm 3: Probabilistic Hold at Output (issend)
     // ======================================================================
+    // ======================================================================
+    // PCRQ Algorithm 2 & 3: Global Hold Check
+    // ======================================================================
     if (m_enablePcrq)
     {
-        // 1. Check if this specific flow was recently held
-        auto itHold = m_holdUntil.find(queueId.value());
-        if (itHold != m_holdUntil.end() && Simulator::Now() < itHold->second)
+        auto it = m_holdUntil.begin();
+        while (it != m_holdUntil.end())
         {
-             NS_LOG_DEBUG("[PCRQ Algo3] STILL HOLDING queue until " << itHold->second.GetSeconds() << "s");
-             return nullptr;
+            if (Simulator::Now() >= it->second)
+            {
+                it = m_holdUntil.erase(it);
+            }
+            else
+            {
+                // Any active hold (Algo 2 or Algo 3) blocks the whole interface
+                NS_LOG_DEBUG("[PCRQ] Interface BLOCKED by hold until " << it->second.GetSeconds() << "s");
+                return nullptr;
+            }
         }
+    }
 
+
+    if (m_enablePcrq)
+    {
         uint32_t nflow = 0;
         uint64_t totalPkts = QueueBase::GetNPackets();
         uint32_t qlen_i = cont.GetQueue(queueId.value()).size();
@@ -681,6 +695,34 @@ WifiMacQueue::DoDequeue(const std::list<ConstIterator>& iterators)
     // Then, notify the scheduler
     if (!items.empty())
     {
+        // PCRQ Algorithm 2: Probabilistic Next (Turn Skipping)
+        if (m_enablePcrq)
+        {
+            for (const auto& item : items)
+            {
+                auto id = WifiMacQueueContainer::GetQueueId(item);
+                if (GetContainer().GetQueue(id).empty())
+                {
+                    uint32_t nflow = 0;
+                    for (const auto& kv : GetContainer().GetQueues())
+                    {
+                        if (!kv.second.empty()) nflow++;
+                    }
+                    uint64_t totalPkts = QueueBase::GetNPackets();
+                    if (nflow > 0 && totalPkts > 0)
+                    {
+                        double ave = static_cast<double>(totalPkts) / nflow;
+                        double prob_skip = m_beta * ave / (static_cast<double>(GetMaxSize().GetValue()) / nflow);
+                        double rand_val = m_uniformRandomVariable->GetValue(0.0, 1.0);
+                        if (rand_val > prob_skip)
+                        {
+                            NS_LOG_DEBUG("[PCRQ Algo2] STAY on empty queue: prob_skip=" << prob_skip);
+                            m_holdUntil[id] = Simulator::Now() + m_delta;
+                        }
+                    }
+                }
+            }
+        }
         m_scheduler->NotifyDequeue(m_ac, items);
     }
 }

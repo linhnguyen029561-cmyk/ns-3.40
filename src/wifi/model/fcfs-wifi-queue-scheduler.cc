@@ -165,53 +165,7 @@ FcfsWifiQueueScheduler::DoNotifyDequeue(AcIndex ac, const std::list<Ptr<WifiMpdu
         }
         else
         {
-            // ==== PCRQ ALGORITHM 2: Controlling the Turn of Reading Queues ====
-            if (GetWifiMacQueue(ac)->GetEnablePcrq()) {
-                uint32_t totalPackets = 0;
-                uint32_t numActiveQueues = 0;
-                uint32_t qmax = 0;
-                
-                for (const auto& kv : GetSortedQueues(ac)) {
-                    uint32_t qSize = GetWifiMacQueue(ac)->GetNPackets(kv.second.get().first);
-                    if (qSize > 0) {
-                        totalPackets += qSize;
-                        numActiveQueues++;
-                        if (qSize > qmax) {
-                            qmax = qSize;
-                        }
-                    }
-                }
-                
-                bool holdTurn = false;
-                if (numActiveQueues > 0 && totalPackets > 0) {
-                    double ave = static_cast<double>(totalPackets) / numActiveQueues;
-                    double beta = GetWifiMacQueue(ac)->GetBeta();
-                    // P_turn calculation based on Algorithm 2
-                    double p_turn = beta * qmax / (numActiveQueues * ave);
-                    
-                    static Ptr<UniformRandomVariable> uv = CreateObject<UniformRandomVariable>();
-                    double randVal = uv->GetValue();
-                    
-                    if (randVal <= p_turn) {
-                        holdTurn = true;
-                        NS_LOG_DEBUG("PCRQ Algorithm 2 Hold Turn: rand=" << randVal << " <= P_turn=" << p_turn 
-                                     << " (qmax=" << qmax << ", ave=" << ave << ")");
-                    }
-                }
-
-                if (holdTurn) {
-                    // Keep the queue's token so it retains its turn (or put it to back of line)
-                    m_queueTokens[queueId] = ++m_token; 
-                    // We do not call SetPriority here because the queue is empty, and ns-3 
-                    // requires removing empty queues from the sorted list to avoid infinite loops
-                    // when searching for packets. We just keep the token in m_queueTokens.
-                } else {
-                    m_queueTokens.erase(queueId);
-                }
-            } else {
-                m_queueTokens.erase(queueId);
-            }
-            // ==== END PCRQ ALGORITHM 2 ====
+            m_queueTokens.erase(queueId);
         }
     }
 }
@@ -238,50 +192,7 @@ FcfsWifiQueueScheduler::DoNotifyRemove(AcIndex ac, const std::list<Ptr<WifiMpdu>
         }
         else
         {
-            // ==== PCRQ ALGORITHM 2: Controlling the Turn of Reading Queues ====
-            if (GetWifiMacQueue(ac)->GetEnablePcrq()) {
-                uint32_t totalPackets = 0;
-                uint32_t numActiveQueues = 0;
-                uint32_t qmax = 0;
-                
-                for (const auto& kv : GetSortedQueues(ac)) {
-                    uint32_t qSize = GetWifiMacQueue(ac)->GetNPackets(kv.second.get().first);
-                    if (qSize > 0) {
-                        totalPackets += qSize;
-                        numActiveQueues++;
-                        if (qSize > qmax) {
-                            qmax = qSize;
-                        }
-                    }
-                }
-                
-                bool holdTurn = false;
-                if (numActiveQueues > 0 && totalPackets > 0) {
-                    double ave = static_cast<double>(totalPackets) / numActiveQueues;
-                    double beta = GetWifiMacQueue(ac)->GetBeta();
-                    // P_turn calculation based on Algorithm 2
-                    double p_turn = beta * qmax / (numActiveQueues * ave);
-                    
-                    static Ptr<UniformRandomVariable> uv = CreateObject<UniformRandomVariable>();
-                    double randVal = uv->GetValue();
-                    
-                    if (randVal <= p_turn) {
-                        holdTurn = true;
-                        NS_LOG_DEBUG("PCRQ Algorithm 2 Hold Turn: rand=" << randVal << " <= P_turn=" << p_turn 
-                                     << " (qmax=" << qmax << ", ave=" << ave << ")");
-                    }
-                }
-
-                if (holdTurn) {
-                    // Keep the queue's token so it retains its turn (or put it to back of line)
-                    m_queueTokens[queueId] = ++m_token; 
-                } else {
-                    m_queueTokens.erase(queueId);
-                }
-            } else {
-                m_queueTokens.erase(queueId);
-            }
-            // ==== END PCRQ ALGORITHM 2 ====
+            m_queueTokens.erase(queueId);
         }
     }
 }
